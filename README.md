@@ -7,6 +7,11 @@ Unofficial Home Assistant integration for Pohjois-Karjalan Sähkö (PKS) custome
 - Monthly consumption and electricity bill: current month (preliminary) and previous month (final, including the hedge outcome and consumption effect).
 - Priima energy price per month, delivery fee and monthly fee.
 - Price hedges: current hedge price and coverage, the list of active hedges, and the next unhedged quarter.
+- Current-month consumption effect and energy price estimate, using PKS's published Priima formula:
+  - consumption effect = own consumption-weighted average spot price − average spot price
+  - energy price = hedge share × (hedge price + consumption effect) + (1 − hedge share) × own average price
+  - Spot prices come from the public sahkotin.fi API (Nord Pool FI, VAT 25.5 %).
+- **Ostosähkön rajahinta nyt** (marginal purchase price): the real energy cost of one extra purchased kWh this hour, i.e. spot + hedge share × (hedge price − monthly average spot) + delivery fee. Transfer fees and electricity tax are not included. The `tunnit` attribute lists upcoming hours for battery and load control.
 - Sold solar electricity and revenue (Aurinkotuottaja contract).
 - Hourly purchased and sold electricity imported into long-term statistics (`pks_live:kulutus`, `pks_live:myynti`), which can be added to the Energy dashboard. Metering data arrives about one day late.
 

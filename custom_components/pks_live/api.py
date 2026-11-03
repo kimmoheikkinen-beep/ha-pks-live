@@ -53,6 +53,10 @@ query Magic($tenantId: String!, $baseUrl: String!) {
 }"""
 
 
+SPOT_URL = "https://sahkotin.fi/prices"
+VAT = 1.255
+
+
 class PksAuthError(Exception):
     """Login failed."""
 
@@ -67,6 +71,10 @@ def _iso(dt: datetime) -> str:
 
 def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def _r(v):
+    return round(v, 3) if v is not None else None
 
 
 def month_start(dt: datetime, delta: int = 0) -> datetime:
@@ -157,6 +165,13 @@ class PksClient:
         dedup = dict(out)
         return sorted(dedup.items())
 
+    def spot(self, start: datetime, end: datetime) -> dict[datetime, float]:
+        """Hourly Nord Pool FI prices in c/kWh incl. VAT, keyed by UTC hour."""
+        r = requests.get(SPOT_URL, params={"start": _iso(start).replace("Z", ".000Z"), "end": _iso(end).replace("Z", ".000Z")},
+                         timeout=60)
+        r.raise_for_status()
+        return {_parse(x["date"]): x["value"] / 10 * VAT for x in r.json().get("prices") or [] if x.get("value") is not None}
+
     def hedges(self) -> list[dict]:
         url = self.gql(Q_MAGIC, tenantId=TENANT, baseUrl=PRIIMA_LIVE_LOGIN)["auth"]["externalMagicLink"]["url"]
         with requests.Session() as s:
@@ -238,4 +253,29 @@ class PksClient:
             q = month_start(q, 3)
         data["hedge_gap"] = gap
         data["hedges"] = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows if r["_e"] > now]
+        data["month"] = self._month_estimate(data["sales_mp"], cur_m, next_m, now, pct, avg, data["margin"] or 0)
         return data
+
+    def _month_estimate(self, mp, cur_m, next_m, now, pct, hedge, margin) -> dict:
+        """PKS Priima: kulutusvaikutus = oma keskihinta - spot-keskiarvo;
+        energian hinta = p * (kiinnityshinta + kulutusvaikutus) + (1 - p) * oma keskihinta."""
+        spot = self.spot(cur_m, now + timedelta(days=2))
+        month_spot = [v for t, v in spot.items() if cur_m <= t < next_m]
+        spot_avg = sum(month_spot) / len(month_spot) if month_spot else None
+        share = min(pct, 100) / 100
+        out: dict = {"spot_avg": _r(spot_avg), "spot_hours": len(month_spot), "hedge_share": share}
+        rows = [(t, k, spot[t]) for t, k in self.hourly(mp, "Sales", cur_m, now) if t in spot]
+        kwh = sum(k for _, k, _ in rows)
+        if kwh > 0:
+            own = sum(k * v for _, k, v in rows) / kwh
+            spot_same = sum(v for _, _, v in rows) / len(rows)
+            kv = own - spot_same
+            energy = share * ((hedge or 0) + kv) + (1 - share) * own
+            out.update(own_avg=_r(own), spot_avg_metered=_r(spot_same), consumption_effect=_r(kv),
+                       energy_price=_r(energy), total_price=_r(energy + margin), metered_kwh=round(kwh, 1),
+                       metered_hours=len(rows), metered_until=_iso(rows[-1][0]))
+        if spot_avg is not None:
+            offset = share * ((hedge or 0) - spot_avg) + margin
+            out["marginal_offset"] = _r(offset)
+            out["marginal"] = {_iso(t): _r(v + offset) for t, v in sorted(spot.items()) if t >= now - timedelta(hours=1)}
+        return out
