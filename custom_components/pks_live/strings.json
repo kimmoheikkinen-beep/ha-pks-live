@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "PKS Live",
+        "description": "Sign in with your PKS Live account (pkslive.pks.fi).",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "PKS Live",
+        "description": "Login expired. Enter the password again.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password",
+      "cannot_connect": "Failed to connect to PKS Live"
+    },
+    "abort": {
+      "already_configured": "Customer already configured",
+      "reauth_successful": "Re-authentication successful"
+    }
+  }
+}

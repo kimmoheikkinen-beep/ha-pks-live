@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "PKS Live",
+        "description": "Kirjaudu PKS Live -tunnuksilla (pkslive.pks.fi).",
+        "data": {
+          "username": "Sähköposti",
+          "password": "Salasana"
+        }
+      },
+      "reauth_confirm": {
+        "title": "PKS Live",
+        "description": "Kirjautuminen vanhentui. Anna salasana uudelleen.",
+        "data": {
+          "password": "Salasana"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Väärä sähköposti tai salasana",
+      "cannot_connect": "Yhteys PKS Liveen epäonnistui"
+    },
+    "abort": {
+      "already_configured": "Asiakas on jo lisätty",
+      "reauth_successful": "Kirjautuminen päivitetty"
+    }
+  }
+}
