@@ -236,7 +236,8 @@ class PksClient:
         cid = int(pc["id"])
         d = self.gql(Q_OFFERS, tenantId=TENANT, customerCode=pc["customerCode"], pricingCaseId=cid,
                      start=now.strftime("%Y-%m-%d"), end=(now + timedelta(days=1100)).strftime("%Y-%m-%d"))
-        prods = ((d.get("pricingCaseTransactionProductPrices") or {}).get("groupedproducts")) or []
+        res = d.get("pricingCaseTransactionProductPrices") or {}
+        prods = res.get("groupedproducts") or []
         cache = getattr(self, "_hist", None) or {}
         today = now.astimezone(TZ).date().isoformat()
         out: list[dict] = []
@@ -286,6 +287,17 @@ class PksClient:
                         "sijainti_pct": round((price - lo) / (hi - lo) * 100) if hi > lo else 50,
                         "kiinnitetty_pct": min(months) if months else 0, "historia": pts})
         self._hist = cache
+        sig = {r["tuote"]: r["hinta"] for r in out}
+        prev = getattr(self, "_prev_prices", None)
+        if sig != prev:
+            names = {r["tuote"]: r["nimi"] for r in out}
+            self._dropped = [{"tuote": k, "nimi": names[k], "ennen": prev[k], "nyt": v,
+                              "muutos_pct": round((v - prev[k]) / prev[k] * 100, 2)}
+                             for k, v in sig.items() if prev and k in prev and v < prev[k]]
+            self._prev_prices, self._changed = sig, now
+        self.offers_meta = {"haettu": now.isoformat(), "pks_aikaleima": res.get("timeStamp"),
+                            "hinnat_muuttuneet": self._changed.isoformat(),
+                            "laskeneet": getattr(self, "_dropped", [])}
         out.sort(key=lambda r: (r["alku"], r["tyyppi"]))
         return out
 
@@ -363,6 +375,7 @@ class PksClient:
         data["hedges"] = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows if r["_e"] > now]
         try:
             data["offers"] = self.offers(rows)
+            data["offers_meta"] = self.offers_meta
         except Exception as err:  # offers are optional; keep other data
             data["offers"] = None
             data["offers_error"] = f"{type(err).__name__}: {err}"

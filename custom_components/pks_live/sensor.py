@@ -182,6 +182,6 @@ class PksOffersSensor(PksSensor):
         offs = d.get("offers") or []
         b = _best(d)
         return {"paras_tuote": b["nimi"] if b else None, "paras_sijainti_pct": b["sijainti_pct"] if b else None,
-                "virhe": d.get("offers_error"),
+                "virhe": d.get("offers_error"), **(d.get("offers_meta") or {}),
                 "tuotteet": [{k: v for k, v in o.items() if k != "historia"} for o in offs],
                 "historia": {o["tuote"]: o["historia"] for o in offs}}

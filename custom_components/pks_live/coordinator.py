@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import PksApiError, PksAuthError, PksClient
@@ -24,8 +25,16 @@ class PksCoordinator(DataUpdateCoordinator[dict]):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(hours=1), config_entry=entry)
         self.client = PksClient(entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD])
+        self._store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.offers")
+        self._store_loaded = False
 
     async def _async_update_data(self) -> dict:
+        if not self._store_loaded:
+            self._store_loaded = True
+            saved = await self._store.async_load() or {}
+            if saved.get("prices"):
+                self.client._prev_prices = saved["prices"]
+                self.client._changed = datetime.fromisoformat(saved["changed"])
         try:
             data = await self.hass.async_add_executor_job(self.client.fetch)
         except PksAuthError as err:
@@ -34,6 +43,9 @@ class PksCoordinator(DataUpdateCoordinator[dict]):
             raise UpdateFailed(str(err)) from err
         except Exception as err:  # requests exceptions
             raise UpdateFailed(f"{type(err).__name__}: {err}") from err
+        if data.get("offers"):
+            self._store.async_delay_save(lambda: {"prices": self.client._prev_prices,
+                                                  "changed": self.client._changed.isoformat()}, 10)
         last = None
         for stat_id, name, mp, ctype in (
             (STAT_CONSUMPTION, "PKS ostosähkö", data["sales_mp"], "Sales"),
