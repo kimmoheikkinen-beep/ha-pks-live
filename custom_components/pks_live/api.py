@@ -277,7 +277,24 @@ class PksClient:
             while m < e_.astimezone(TZ):
                 months.append(sum(r["osuus"] for r in cover if r["_s"] <= m + timedelta(days=1) < r["_e"]))
                 m = month_start(m, 1)
-            out.append({"tuote": p.get("product"), "nimi": nimi, "tyyppi": "Kvartaali" if kvartaali else "Kuukausi",
+            def _own(ps, pe):
+                rs = [r for r in hedge_rows if r["_s"] < pe and r["_e"] > ps]
+                pct = sum(r["osuus"] for r in rs)
+                avg = round(sum(r["osuus"] * (r["hinta"] or 0) for r in rs) / pct, 3) if pct else None
+                return rs, pct, avg
+            own, _, oma = _own(s_, e_)
+            aiemmat = []
+            for y in (1, 2, 3):
+                le1 = le + timedelta(seconds=1)
+                rs, pct, avg = _own(ls.replace(year=ls.year - y), le1.replace(year=le1.year - y))
+                if rs:
+                    aiemmat.append({"vuosi": ls.year - y, "hinta": avg, "osuus": min(pct, 100),
+                                    "jaksot": ", ".join(r["jakso"] for r in rs),
+                                    "tehty": ", ".join(sorted({r["tehty"] for r in rs}))})
+            out.append({"oma_hinta": oma, "omat": [{"jakso": r["jakso"], "osuus": r["osuus"], "hinta": r["hinta"],
+                                                    "tehty": r["tehty"]} for r in own],
+                        "aiemmat": aiemmat,
+                        "tuote": p.get("product"), "nimi": nimi, "tyyppi": "Kvartaali" if kvartaali else "Kuukausi",
                         "alku": ls.date().isoformat(), "loppu": le.date().isoformat(), "hinta": price,
                         "muutos_pct": p.get("changePercent"), "paivitetty": upd,
                         "viim_kiinnitys": _parse(p["productLastQuotationDate"]).astimezone(TZ).date().isoformat()
@@ -375,7 +392,8 @@ class PksClient:
         data["hedges"] = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows if r["_e"] > now]
         try:
             data["offers"] = self.offers(rows)
-            data["offers_meta"] = self.offers_meta
+            data["offers_meta"] = dict(self.offers_meta, kiinnityshistoria=[
+                {k: v for k, v in r.items() if not k.startswith("_")} for r in rows])
         except Exception as err:  # offers are optional; keep other data
             data["offers"] = None
             data["offers_error"] = f"{type(err).__name__}: {err}"

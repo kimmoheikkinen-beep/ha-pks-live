@@ -166,7 +166,7 @@ OFFERS = PksDesc(key="kiinnitystarjoukset", name="Kiinnitystarjoukset", value=la
 class PksOffersSensor(PksSensor):
     """Kiinnitettävät kuukausi- ja kvartaalituotteet. Tila = edullisimman (6 kk vaihteluvälissä) kiinnittämättömän hinta."""
 
-    _unrecorded_attributes = frozenset({"tuotteet", "historia"})
+    _unrecorded_attributes = frozenset({"tuotteet", "historia", "kiinnityshistoria", "laskeneet"})
 
     def __init__(self, coord: PksCoordinator) -> None:
         super().__init__(coord, OFFERS)
