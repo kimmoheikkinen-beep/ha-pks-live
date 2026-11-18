@@ -1,4 +1,4 @@
-"""Synchronous client for PKS Live (GraphQL) and Priima Live (REST)."""
+"""Synchronous client for PKS Live (GraphQL)."""
 from __future__ import annotations
 
 import base64
@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from .const import CLIENT_ID, GRAPHQL_URL, PRIIMA_LIVE_API, PRIIMA_LIVE_LOGIN, TENANT, USER_POOL
+from .const import CLIENT_ID, GRAPHQL_URL, TENANT, USER_POOL
 
 TZ = ZoneInfo("Europe/Helsinki")
 
@@ -47,9 +47,19 @@ query Range($tenantId: ID!, $customerId: ID!, $meteringPointId: ID!, $contractTy
   }
 }"""
 
-Q_MAGIC = """
-query Magic($tenantId: String!, $baseUrl: String!) {
-  auth { externalMagicLink(tenantId: $tenantId, baseUrl: $baseUrl) { url } }
+Q_PRICING_CASES = """
+query PricingCases($tenantId: ID!, $customerIdentifier: ID!) {
+  customersByIdentifier(tenantId: $tenantId, customerIdentifier: $customerIdentifier) {
+    customers { identifier pricingCases(tenantId: $tenantId) { id customerCode end } }
+  }
+}"""
+
+Q_HEDGES = """
+query Hedges($tenantId: ID!, $customerCode: String!, $pricingCaseId: Int!) {
+  pricingCaseTransactionsGrouped(tenantId: $tenantId, customerCode: $customerCode, pricingCaseId: $pricingCaseId) {
+    identifier percentage periodName price start end created nameFi
+  }
+  vatRates(tenantId: $tenantId) { startDate endDate rate }
 }"""
 
 
@@ -173,13 +183,21 @@ class PksClient:
         return {_parse(x["date"]): x["value"] / 10 * VAT for x in r.json().get("prices") or [] if x.get("value") is not None}
 
     def hedges(self) -> list[dict]:
-        url = self.gql(Q_MAGIC, tenantId=TENANT, baseUrl=PRIIMA_LIVE_LOGIN)["auth"]["externalMagicLink"]["url"]
-        with requests.Session() as s:
-            s.get(url, timeout=60).raise_for_status()
-            r = s.get(PRIIMA_LIVE_API + "Customer/Transactions/", timeout=60,
-                      headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"})
-            r.raise_for_status()
-            return r.json()
+        """Kiinnitykset PKS Liven GraphQL:stä (Priima Live -palvelu poistui 11/2026)."""
+        cases = [pc for c in self.gql(Q_PRICING_CASES, tenantId=TENANT, customerIdentifier=self.customer_id)
+                 ["customersByIdentifier"]["customers"] for pc in c.get("pricingCases") or []]
+        out: list[dict] = []
+        for pc in cases:
+            d = self.gql(Q_HEDGES, tenantId=TENANT, customerCode=pc["customerCode"], pricingCaseId=int(pc["id"]))
+            vats = d.get("vatRates") or []
+            for h in d.get("pricingCaseTransactionsGrouped") or []:
+                vat = next((v["rate"] for v in vats if _parse(v["startDate"]) <= _parse(h["start"])
+                            and (not v.get("endDate") or _parse(h["start"]) < _parse(v["endDate"]))), (VAT - 1) * 100)
+                out.append({"PeriodName": h.get("periodName"), "InstrumentName": h.get("nameFi") or h.get("periodName"),
+                            "PeriodStart": h["start"], "PeriodStop": h["end"], "Percentage": h.get("percentage"),
+                            "PriceWithVat": round(h["price"] / 10 * (1 + vat / 100), 3) if h.get("price") is not None else None,
+                            "Time": h.get("created") or ""})
+        return out
 
     def fetch(self) -> dict:
         self.login()
