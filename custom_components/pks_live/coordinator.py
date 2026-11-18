@@ -22,7 +22,7 @@ BACKFILL_DAYS = 90
 
 class PksCoordinator(DataUpdateCoordinator[dict]):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(hours=3), config_entry=entry)
+        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(hours=1), config_entry=entry)
         self.client = PksClient(entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD])
 
     async def _async_update_data(self) -> dict:

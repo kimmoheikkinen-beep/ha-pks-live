@@ -264,7 +264,9 @@ class PksClient:
             pts = list(hist[1]) if hist else []
             price = round(p["price"] * f, 3)
             upd = _parse(p["priceLastUpdated"]).astimezone(TZ).date().isoformat() if p.get("priceLastUpdated") else today
-            if not pts or pts[-1][0] < upd:
+            if pts and pts[-1][0] >= upd:
+                pts[-1] = [pts[-1][0], price]
+            else:
                 pts.append([upd, price])
             vals = [v for _, v in pts] or [price]
             m1 = [v for dd, v in pts if dd >= (now - timedelta(days=30)).astimezone(TZ).date().isoformat()] or vals
