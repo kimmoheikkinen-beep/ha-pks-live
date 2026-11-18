@@ -96,7 +96,7 @@ DESCS: tuple[PksDesc, ...] = (
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities: AddEntitiesCallback) -> None:
     coord: PksCoordinator = entry.runtime_data
-    async_add_entities([*(PksSensor(coord, d) for d in DESCS), PksMarginalSensor(coord)])
+    async_add_entities([*(PksSensor(coord, d) for d in DESCS), PksMarginalSensor(coord), PksOffersSensor(coord)])
 
 
 class PksSensor(CoordinatorEntity[PksCoordinator], SensorEntity):
@@ -152,3 +152,36 @@ class PksMarginalSensor(PksSensor):
         now = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
         upcoming = {k: v for k, v in self._prices().items() if dt_util.parse_datetime(k) >= now}
         return {"lisa_spottiin": (self.coordinator.data.get("month") or {}).get("marginal_offset"), "tunnit": upcoming}
+
+
+def _best(d):
+    offs = [o for o in d.get("offers") or [] if o.get("kiinnitetty_pct", 0) < 100]
+    return min(offs, key=lambda o: o["sijainti_pct"]) if offs else None
+
+
+OFFERS = PksDesc(key="kiinnitystarjoukset", name="Kiinnitystarjoukset", value=lambda d: None,
+                 native_unit_of_measurement=CENT, suggested_display_precision=2)
+
+
+class PksOffersSensor(PksSensor):
+    """Kiinnitettävät kuukausi- ja kvartaalituotteet. Tila = edullisimman (6 kk vaihteluvälissä) kiinnittämättömän hinta."""
+
+    _unrecorded_attributes = frozenset({"tuotteet", "historia"})
+
+    def __init__(self, coord: PksCoordinator) -> None:
+        super().__init__(coord, OFFERS)
+
+    @property
+    def native_value(self):
+        b = _best(self.coordinator.data)
+        return b["hinta"] if b else None
+
+    @property
+    def extra_state_attributes(self):
+        d = self.coordinator.data
+        offs = d.get("offers") or []
+        b = _best(d)
+        return {"paras_tuote": b["nimi"] if b else None, "paras_sijainti_pct": b["sijainti_pct"] if b else None,
+                "virhe": d.get("offers_error"),
+                "tuotteet": [{k: v for k, v in o.items() if k != "historia"} for o in offs],
+                "historia": {o["tuote"]: o["historia"] for o in offs}}

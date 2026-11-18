@@ -62,6 +62,23 @@ query Hedges($tenantId: ID!, $customerCode: String!, $pricingCaseId: Int!) {
   vatRates(tenantId: $tenantId) { startDate endDate rate }
 }"""
 
+Q_OFFERS = """
+query Offers($tenantId: ID!, $customerCode: String!, $pricingCaseId: Int!, $start: String!, $end: String!) {
+  pricingCaseTransactionProductPrices(tenantId: $tenantId, customerCode: $customerCode, pricingCaseId: $pricingCaseId,
+                                      start: $start, end: $end) {
+    timeStamp
+    groupedproducts { product productDeliveryPeriod start end price priceLastUpdated changePercent
+                      productLastQuotationDate transactionOfferPeriodId isPromoted }
+  }
+}"""
+
+Q_PRICE_HISTORY = """
+query PriceHistory($tenantId: ID!, $transactionOfferPeriodId: Int!, $pricingCaseId: Int!, $historyRange: PriceHistoryRange) {
+  pricingCaseTransactionProductPriceHistory(tenantId: $tenantId, transactionOfferPeriodId: $transactionOfferPeriodId,
+                                            pricingCaseId: $pricingCaseId, historyRange: $historyRange) { date price }
+}"""
+
+KK = ["tammi", "helmi", "maalis", "huhti", "touko", "kesä", "heinä", "elo", "syys", "loka", "marras", "joulu"]
 
 SPOT_URL = "https://sahkotin.fi/prices"
 VAT = 1.255
@@ -80,7 +97,8 @@ def _iso(dt: datetime) -> str:
 
 
 def _parse(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def _r(v):
@@ -187,9 +205,11 @@ class PksClient:
         cases = [pc for c in self.gql(Q_PRICING_CASES, tenantId=TENANT, customerIdentifier=self.customer_id)
                  ["customersByIdentifier"]["customers"] for pc in c.get("pricingCases") or []]
         out: list[dict] = []
+        self._cases = cases
         for pc in cases:
             d = self.gql(Q_HEDGES, tenantId=TENANT, customerCode=pc["customerCode"], pricingCaseId=int(pc["id"]))
             vats = d.get("vatRates") or []
+            self._vats = vats
             for h in d.get("pricingCaseTransactionsGrouped") or []:
                 vat = next((v["rate"] for v in vats if _parse(v["startDate"]) <= _parse(h["start"])
                             and (not v.get("endDate") or _parse(h["start"]) < _parse(v["endDate"]))), (VAT - 1) * 100)
@@ -197,6 +217,74 @@ class PksClient:
                             "PeriodStart": h["start"], "PeriodStop": h["end"], "Percentage": h.get("percentage"),
                             "PriceWithVat": round(h["price"] / 10 * (1 + vat / 100), 3) if h.get("price") is not None else None,
                             "Time": h.get("created") or ""})
+        return out
+
+    def _vat(self, when: datetime) -> float:
+        for v in getattr(self, "_vats", None) or []:
+            if _parse(v["startDate"]) <= when and (not v.get("endDate") or when < _parse(v["endDate"])):
+                return v["rate"]
+        return (VAT - 1) * 100
+
+    def offers(self, hedge_rows: list[dict]) -> list[dict]:
+        """Kiinnitystarjoukset (kuukausi/kvartaali) hintoineen ja 6 kk hintahistoria, c/kWh sis. alv."""
+        now = datetime.now(timezone.utc)
+        cases = [pc for pc in getattr(self, "_cases", None) or []
+                 if not pc.get("end") or _parse(pc["end"]) > now] or getattr(self, "_cases", None) or []
+        if not cases:
+            return []
+        pc = cases[0]
+        cid = int(pc["id"])
+        d = self.gql(Q_OFFERS, tenantId=TENANT, customerCode=pc["customerCode"], pricingCaseId=cid,
+                     start=now.strftime("%Y-%m-%d"), end=(now + timedelta(days=1100)).strftime("%Y-%m-%d"))
+        prods = ((d.get("pricingCaseTransactionProductPrices") or {}).get("groupedproducts")) or []
+        cache = getattr(self, "_hist", None) or {}
+        today = now.astimezone(TZ).date().isoformat()
+        out: list[dict] = []
+        for p in prods:
+            if p.get("price") is None:
+                continue
+            s_, e_ = _parse(p["start"]), _parse(p["end"])
+            f = (1 + self._vat(s_) / 100) / 10
+            ls, le = s_.astimezone(TZ), (e_ - timedelta(seconds=1)).astimezone(TZ)
+            kvartaali = p.get("productDeliveryPeriod") == "Quarter"
+            nimi = (f"Q{(ls.month - 1) // 3 + 1}/{ls.year} ({KK[ls.month - 1]}–{KK[le.month - 1]}kuu)" if kvartaali
+                    else f"{KK[ls.month - 1].capitalize()}kuu {ls.year}")
+            oid = p.get("transactionOfferPeriodId")
+            hist = cache.get(oid)
+            if oid is not None and (not hist or hist[0] != today):
+                try:
+                    h = self.gql(Q_PRICE_HISTORY, tenantId=TENANT, transactionOfferPeriodId=int(oid), pricingCaseId=cid,
+                                 historyRange="SixMonths")
+                    pts = [[x["date"][:10], round(x["price"] * f, 3)]
+                           for x in h.get("pricingCaseTransactionProductPriceHistory") or [] if x.get("price") is not None]
+                    hist = (today, pts)
+                    cache[oid] = hist
+                except Exception:  # history is best effort
+                    hist = hist or (today, [])
+            pts = list(hist[1]) if hist else []
+            price = round(p["price"] * f, 3)
+            upd = _parse(p["priceLastUpdated"]).astimezone(TZ).date().isoformat() if p.get("priceLastUpdated") else today
+            if not pts or pts[-1][0] < upd:
+                pts.append([upd, price])
+            vals = [v for _, v in pts] or [price]
+            m1 = [v for dd, v in pts if dd >= (now - timedelta(days=30)).astimezone(TZ).date().isoformat()] or vals
+            lo, hi = min(vals), max(vals)
+            cover = [r for r in hedge_rows if r["_s"] < e_ and r["_e"] > s_]
+            months, m = [], ls.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            while m < e_.astimezone(TZ):
+                months.append(sum(r["osuus"] for r in cover if r["_s"] <= m + timedelta(days=1) < r["_e"]))
+                m = month_start(m, 1)
+            out.append({"tuote": p.get("product"), "nimi": nimi, "tyyppi": "Kvartaali" if kvartaali else "Kuukausi",
+                        "alku": ls.date().isoformat(), "loppu": le.date().isoformat(), "hinta": price,
+                        "muutos_pct": p.get("changePercent"), "paivitetty": upd,
+                        "viim_kiinnitys": _parse(p["productLastQuotationDate"]).astimezone(TZ).date().isoformat()
+                        if p.get("productLastQuotationDate") else None,
+                        "min_6kk": round(lo, 3), "max_6kk": round(hi, 3), "ka_6kk": round(sum(vals) / len(vals), 3),
+                        "min_30pv": round(min(m1), 3), "max_30pv": round(max(m1), 3),
+                        "sijainti_pct": round((price - lo) / (hi - lo) * 100) if hi > lo else 50,
+                        "kiinnitetty_pct": min(months) if months else 0, "historia": pts})
+        self._hist = cache
+        out.sort(key=lambda r: (r["alku"], r["tyyppi"]))
         return out
 
     def fetch(self) -> dict:
@@ -271,6 +359,11 @@ class PksClient:
             q = month_start(q, 3)
         data["hedge_gap"] = gap
         data["hedges"] = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows if r["_e"] > now]
+        try:
+            data["offers"] = self.offers(rows)
+        except Exception as err:  # offers are optional; keep other data
+            data["offers"] = None
+            data["offers_error"] = f"{type(err).__name__}: {err}"
         data["month"] = self._month_estimate(data["sales_mp"], cur_m, next_m, now, pct, avg, data["margin"] or 0)
         return data
 
